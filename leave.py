@@ -9,8 +9,11 @@
 from __future__ import annotations
 
 import argparse
+import calendar
+import json
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from rich.align import Align
 from rich.console import Group
@@ -21,6 +24,46 @@ from rich.table import Table
 from rich.text import Text
 
 WEEKDAYS = "월화수목금토일"
+HOLIDAY_FILE = Path(__file__).parent / "docs" / "holidays.json"
+
+
+def load_holidays() -> dict[date, str]:
+    """docs/holidays.json (tools/gen_holidays.py 로 생성) -> {date: 이름}"""
+    try:
+        raw = json.loads(HOLIDAY_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {date.fromisoformat(k): v for k, v in raw.items()}
+
+
+def is_off(d: date, hol: dict[date, str]) -> bool:
+    return d.weekday() >= 5 or d in hol
+
+
+def payday_of(year: int, month: int, day: int, hol: dict[date, str]) -> date:
+    """월급일. 주말·공휴일이면 직전 근무일로 당긴다. 말일보다 큰 day는 말일로 본다."""
+    d = date(year, month, min(day, calendar.monthrange(year, month)[1]))
+    while is_off(d, hol):
+        d -= timedelta(days=1)
+    return d
+
+
+def next_payday(today: date, day: int, hol: dict[date, str]) -> date:
+    p = payday_of(today.year, today.month, day, hol)
+    if p >= today:
+        return p
+    y, m = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+    return payday_of(y, m, day, hol)
+
+
+def next_holiday(today: date, hol: dict[date, str]) -> tuple[date, str] | None:
+    future = sorted(d for d in hol if d >= today)
+    return (future[0], hol[future[0]]) if future else None
+
+
+def dday(target: date, today: date) -> str:
+    n = (target - today).days
+    return "오늘!" if n == 0 else f"D-{n}"
 
 
 def parse_hm(s: str) -> tuple[int, int]:
@@ -59,9 +102,11 @@ def days_to_weekend(now: datetime) -> int:
     return max(4 - wd, 0) if wd < 5 else 0
 
 
-def render(now: datetime, start, end, lunch) -> Panel:
+def render(now: datetime, start, end, lunch, hol=None, payday=25) -> Panel:
+    hol = hol or {}
     s, e = at(now, start), at(now, end)
-    is_workday = now.weekday() < 5
+    today = now.date()
+    is_workday = not is_off(today, hol)
     working = is_workday and s <= now < e
 
     if working:
@@ -84,7 +129,7 @@ def render(now: datetime, start, end, lunch) -> Panel:
         big = Text(fmt_delta(remaining), style="bold cyan", justify="center")
         caption = Text("출근까지", style="dim", justify="center")
     elif not is_workday:
-        big = Text("주말입니다", style="bold cyan", justify="center")
+        big = Text(f"{hol[today]}" if today in hol else "주말입니다", style="bold cyan", justify="center")
         caption = Text("", justify="center")
     else:
         big = Text("퇴근 완료", style="bold cyan", justify="center")
@@ -107,7 +152,15 @@ def render(now: datetime, start, end, lunch) -> Panel:
         else:
             info.add_row("점심", "끝남" if now >= le else "-")
     d = days_to_weekend(now)
-    info.add_row("주말까지", "오늘이 금요일! 🎊" if (is_workday and d == 0) else (f"{d}일" if is_workday else "주말 🛋️"))
+    if today in hol:
+        info.add_row("주말까지", f"공휴일 ({hol[today]}) 🛋️")
+    else:
+        info.add_row("주말까지", "오늘이 금요일! 🎊" if (is_workday and d == 0) else (f"{d}일" if is_workday else "주말 🛋️"))
+    nh = next_holiday(today, hol)
+    if nh:
+        info.add_row("다음 공휴일", f"{nh[1]} {dday(nh[0], today)}")
+    pd = next_payday(today, payday, hol)
+    info.add_row("월급날", f"{pd:%m/%d}({WEEKDAYS[pd.weekday()]}) {dday(pd, today)} 💰")
 
     body = Group(
         Align.center(title), Text(),
@@ -123,6 +176,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="퇴근 카운트다운")
     ap.add_argument("--start", default="09:00", help="출근 시각 HH:MM")
     ap.add_argument("--end", default="18:00", help="퇴근 시각 HH:MM")
+    ap.add_argument("--payday", type=int, default=25, help="월급일(일). 휴일이면 앞 근무일")
     ap.add_argument("--lunch", default="12:00-13:00", help="점심시간 HH:MM-HH:MM, 끄려면 none")
     a = ap.parse_args()
 
@@ -132,10 +186,11 @@ def main() -> None:
         l1, l2 = a.lunch.split("-")
         lunch = (parse_hm(l1), parse_hm(l2))
 
+    hol = load_holidays()
     try:
-        with Live(render(datetime.now(), start, end, lunch), refresh_per_second=4, screen=True) as live:
+        with Live(render(datetime.now(), start, end, lunch, hol, a.payday), refresh_per_second=4, screen=True) as live:
             while True:
-                live.update(render(datetime.now(), start, end, lunch))
+                live.update(render(datetime.now(), start, end, lunch, hol, a.payday))
                 time.sleep(0.25)
     except KeyboardInterrupt:
         pass

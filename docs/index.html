@@ -50,6 +50,8 @@
     <dt>근무시간</dt><dd id="range"></dd>
     <dt>점심</dt><dd id="lunch"></dd>
     <dt>주말까지</dt><dd id="weekend"></dd>
+    <dt>다음 공휴일</dt><dd id="nexthol"></dd>
+    <dt>월급날</dt><dd id="pay"></dd>
   </dl>
   <div class="msg" id="msg"></div>
 
@@ -60,6 +62,8 @@
       <label for="end">퇴근</label><input id="end" type="time" value="18:00">
       <label>점심</label>
       <div class="row"><input id="ls" type="time" value="12:00"> ~ <input id="le" type="time" value="13:00"></div>
+      <label for="payday">월급일</label>
+      <div class="row"><input id="payday" type="number" min="1" max="31" value="25" style="width:4.5em"> 일 <small style="color:var(--dim)">(휴일이면 앞 근무일)</small></div>
     </form>
   </details>
 </main>
@@ -72,12 +76,12 @@ const KEY = "leave-countdown-cfg";
 // 설정 저장/복원 (저장소를 못 쓰는 환경에서도 동작해야 함)
 try {
   const saved = JSON.parse(localStorage.getItem(KEY) || "{}");
-  for (const id of ["start", "end", "ls", "le"]) if (saved[id]) $(id).value = saved[id];
+  for (const id of ["start", "end", "ls", "le", "payday"]) if (saved[id]) $(id).value = saved[id];
 } catch (e) {}
 $("cfg").addEventListener("input", () => {
   try {
     localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(
-      ["start", "end", "ls", "le"].map(id => [id, $(id).value]))));
+      ["start", "end", "ls", "le", "payday"].map(id => [id, $(id).value]))));
   } catch (e) {}
 });
 
@@ -90,6 +94,27 @@ const at = (now, hm) => {
   const [h, m] = (hm || "00:00").split(":").map(Number);
   const d = new Date(now); d.setHours(h, m, 0, 0); return d;
 };
+
+// 공휴일: docs/holidays.json (tools/gen_holidays.py 로 생성). 못 불러오면 주말만 휴일로 본다.
+let HOL = {};
+fetch("holidays.json").then(r => r.ok ? r.json() : {}).then(j => { HOL = j; tick(); }).catch(() => {});
+
+const key = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const dayOnly = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const isOff = d => d.getDay() === 0 || d.getDay() === 6 || key(d) in HOL;
+const dday = (t, today) => { const n = Math.round((t - today) / 864e5); return n === 0 ? "오늘!" : `D-${n}`; };
+
+// 월급일: 주말·공휴일이면 직전 근무일. 말일보다 큰 값은 말일로 본다.
+function paydayOf(y, m, day) {
+  const last = new Date(y, m + 1, 0).getDate();
+  const d = new Date(y, m, Math.min(day, last));
+  while (isOff(d)) d.setDate(d.getDate() - 1);
+  return d;
+}
+function nextPayday(today, day) {
+  const p = paydayOf(today.getFullYear(), today.getMonth(), day);
+  return p >= today ? p : paydayOf(today.getFullYear(), today.getMonth() + 1, day);
+}
 
 function mood(mins, working) {
   if (!working) return ["#2b8fb8", "근무 시간이 아닙니다 🎉"];
@@ -104,7 +129,9 @@ function tick() {
   const s = at(now, $("start").value), e = at(now, $("end").value);
   const ls = at(now, $("ls").value), le = at(now, $("le").value);
   const wd = now.getDay();
-  const isWorkday = wd >= 1 && wd <= 5;
+  const today = dayOnly(now);
+  const holName = HOL[key(today)];
+  const isWorkday = !isOff(today);
   const valid = e > s;
   const working = isWorkday && valid && now >= s && now < e;
 
@@ -114,7 +141,7 @@ function tick() {
   } else if (isWorkday && valid && now < s) {
     pct = 0; remaining = s - now; big = fmt(remaining); caption = "출근까지";
   } else if (!isWorkday) {
-    big = "주말입니다";
+    big = holName || "주말입니다";
   } else {
     big = "퇴근 완료";
   }
@@ -135,7 +162,17 @@ function tick() {
   else if (isWorkday && now >= le) lunch = "끝남";
   $("lunch").textContent = lunch;
 
-  $("weekend").textContent = !isWorkday ? "주말 🛋️" : wd === 5 ? "오늘이 금요일! 🎊" : `${5 - wd}일`;
+  $("weekend").textContent = holName ? `공휴일 (${holName}) 🛋️` : !isWorkday ? "주말 🛋️" : wd === 5 ? "오늘이 금요일! 🎊" : `${5 - wd}일`;
+
+  const upcoming = Object.keys(HOL).sort().find(k => k >= key(today));
+  if (upcoming) {
+    const [y, m, d] = upcoming.split("-").map(Number);
+    $("nexthol").textContent = `${HOL[upcoming]} ${dday(new Date(y, m - 1, d), today)}`;
+  } else $("nexthol").textContent = "-";
+
+  const pd = Math.min(Math.max(parseInt($("payday").value, 10) || 25, 1), 31);
+  const p = nextPayday(today, pd);
+  $("pay").textContent = `${pad(p.getMonth() + 1)}/${pad(p.getDate())}(${DAYS[p.getDay()]}) ${dday(p, today)} 💰`;
   $("msg").textContent = valid ? msg : "퇴근 시각이 출근보다 늦어야 해요";
 }
 tick();
