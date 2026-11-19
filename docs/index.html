@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>퇴근 카운트다운</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --fg: #1d2330; --dim: #6b7385; --track: #e4e7ee; --line: #dde1ea;
+    --c: #d93a3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #11141b; --card: #1a1f2a; --fg: #e8ebf2; --dim: #8b93a7; --track: #2a3040; --line: #2a3040; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px;
+    background: var(--bg); color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans KR", sans-serif;
+  }
+  main { width: 100%; max-width: 460px; background: var(--card); border: 2px solid var(--c);
+    border-radius: 16px; padding: 28px 24px; text-align: center; transition: border-color .4s; }
+  .date { color: var(--dim); font-size: 14px; font-variant-numeric: tabular-nums; }
+  .caption { margin-top: 18px; color: var(--dim); font-size: 14px; min-height: 1.2em; }
+  .big { font-size: clamp(44px, 14vw, 68px); font-weight: 700; color: var(--c);
+    font-variant-numeric: tabular-nums; line-height: 1.15; transition: color .4s; }
+  .bar { height: 12px; background: var(--track); border-radius: 6px; overflow: hidden; margin: 20px 0 22px; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--c); transition: width .5s linear, background .4s; }
+  dl { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; margin: 0 0 20px; font-size: 14px; }
+  dt { text-align: right; color: var(--dim); }
+  dd { margin: 0; text-align: left; font-variant-numeric: tabular-nums; }
+  .msg { color: var(--c); font-weight: 600; min-height: 1.4em; transition: color .4s; }
+  details { margin-top: 22px; border-top: 1px solid var(--line); padding-top: 14px; text-align: left; font-size: 14px; }
+  summary { cursor: pointer; color: var(--dim); }
+  form { display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; align-items: center; margin-top: 12px; }
+  input { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg); color: var(--fg); min-width: 0; }
+  label { color: var(--dim); }
+  .row { display: flex; gap: 6px; align-items: center; }
+</style>
+</head>
+<body>
+<main>
+  <div class="date" id="date"></div>
+  <div class="caption" id="caption"></div>
+  <div class="big" id="big">--:--:--</div>
+  <div class="bar"><i id="fill"></i></div>
+  <dl>
+    <dt>진행률</dt><dd id="pct"></dd>
+    <dt>근무시간</dt><dd id="range"></dd>
+    <dt>점심</dt><dd id="lunch"></dd>
+    <dt>주말까지</dt><dd id="weekend"></dd>
+  </dl>
+  <div class="msg" id="msg"></div>
+
+  <details>
+    <summary>시간 설정</summary>
+    <form id="cfg">
+      <label for="start">출근</label><input id="start" type="time" value="09:00">
+      <label for="end">퇴근</label><input id="end" type="time" value="18:00">
+      <label>점심</label>
+      <div class="row"><input id="ls" type="time" value="12:00"> ~ <input id="le" type="time" value="13:00"></div>
+    </form>
+  </details>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const DAYS = "일월화수목금토";
+const KEY = "leave-countdown-cfg";
+
+// 설정 저장/복원 (저장소를 못 쓰는 환경에서도 동작해야 함)
+try {
+  const saved = JSON.parse(localStorage.getItem(KEY) || "{}");
+  for (const id of ["start", "end", "ls", "le"]) if (saved[id]) $(id).value = saved[id];
+} catch (e) {}
+$("cfg").addEventListener("input", () => {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(
+      ["start", "end", "ls", "le"].map(id => [id, $(id).value]))));
+  } catch (e) {}
+});
+
+const pad = n => String(n).padStart(2, "0");
+const fmt = ms => {
+  const t = Math.max(Math.floor(ms / 1000), 0);
+  return `${pad(Math.floor(t / 3600))}:${pad(Math.floor(t % 3600 / 60))}:${pad(t % 60)}`;
+};
+const at = (now, hm) => {
+  const [h, m] = (hm || "00:00").split(":").map(Number);
+  const d = new Date(now); d.setHours(h, m, 0, 0); return d;
+};
+
+function mood(mins, working) {
+  if (!working) return ["#2b8fb8", "근무 시간이 아닙니다 🎉"];
+  if (mins <= 10) return ["#1f9d55", "가방 챙기세요 🎒"];
+  if (mins <= 60) return ["#2fa84f", "거의 다 왔다, 마지막 한 시간 🔥"];
+  if (mins <= 180) return ["#d69a0b", "조금만 더 버텨요 ☕"];
+  return ["#d93a3a", "아직 멀었다... 😇"];
+}
+
+function tick() {
+  const now = new Date();
+  const s = at(now, $("start").value), e = at(now, $("end").value);
+  const ls = at(now, $("ls").value), le = at(now, $("le").value);
+  const wd = now.getDay();
+  const isWorkday = wd >= 1 && wd <= 5;
+  const valid = e > s;
+  const working = isWorkday && valid && now >= s && now < e;
+
+  let pct = 1, remaining = 0, big, caption = "";
+  if (working) {
+    pct = (now - s) / (e - s); remaining = e - now; big = fmt(remaining); caption = "퇴근까지";
+  } else if (isWorkday && valid && now < s) {
+    pct = 0; remaining = s - now; big = fmt(remaining); caption = "출근까지";
+  } else if (!isWorkday) {
+    big = "주말입니다";
+  } else {
+    big = "퇴근 완료";
+  }
+
+  const [color, msg] = mood(remaining / 60000, working);
+  document.documentElement.style.setProperty("--c", color);
+
+  $("date").textContent = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} (${DAYS[wd]}) ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  $("caption").textContent = caption;
+  $("big").textContent = big;
+  $("fill").style.width = (pct * 100).toFixed(1) + "%";
+  $("pct").textContent = (pct * 100).toFixed(1) + "%";
+  $("range").textContent = `${$("start").value} ~ ${$("end").value}`;
+
+  let lunch = "-";
+  if (working && now < ls) lunch = fmt(ls - now) + " 후";
+  else if (working && now >= ls && now < le) lunch = "먹는 중 🍚";
+  else if (isWorkday && now >= le) lunch = "끝남";
+  $("lunch").textContent = lunch;
+
+  $("weekend").textContent = !isWorkday ? "주말 🛋️" : wd === 5 ? "오늘이 금요일! 🎊" : `${5 - wd}일`;
+  $("msg").textContent = valid ? msg : "퇴근 시각이 출근보다 늦어야 해요";
+}
+tick();
+setInterval(tick, 250);
+</script>
+</body>
+</html>
